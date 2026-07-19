@@ -1,4 +1,5 @@
 /.dapper
+/.dapper-image
 /bin
 /dist
 *.swp

@@ -3,12 +3,15 @@ package cron
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/Sirupsen/logrus"
-	"github.com/rancher/go-rancher-metadata/metadata"
+	"github.com/PastureStack/container-cron/internal/metadata"
+	"github.com/sirupsen/logrus"
 	"gopkg.in/robfig/cron.v2"
 )
+
+var newMetadataClient = metadata.NewClientAndWait
 
 type cronJob interface {
 	Deactivate()
@@ -16,10 +19,13 @@ type cronJob interface {
 
 // Crontab is the struct that holds the cron runner
 type Crontab struct {
-	cronRunner *cron.Cron
-	jobs       map[string]*JobEntry
-	mdClient   metadata.Client
-	rancher    bool
+	cronRunner   *cron.Cron
+	mu           sync.RWMutex
+	jobs         map[string]*JobEntry
+	mdClient     metadata.Client
+	metadataMode bool
+	stopOnce     sync.Once
+	stopCh       chan struct{}
 }
 
 type JobEntry struct {
@@ -33,6 +39,7 @@ func NewCrontab() (*Crontab, error) {
 	crontab := &Crontab{
 		cronRunner: cron.New(),
 		jobs:       map[string]*JobEntry{},
+		stopCh:     make(chan struct{}),
 	}
 
 	crontab.cronRunner.Start()
@@ -40,22 +47,31 @@ func NewCrontab() (*Crontab, error) {
 	return crontab, nil
 }
 
-func NewRancherTypeCrontab(metadataURL string) (*Crontab, error) {
+func NewMetadataAwareCrontab(metadataURL string) (*Crontab, error) {
 	crontab, err := NewCrontab()
 	if err != nil {
-		return crontab, nil
+		return nil, err
 	}
 
-	crontab.mdClient, err = metadata.NewClientAndWait(metadataURL)
+	crontab.mdClient, err = newMetadataClient(metadataURL)
 	if err != nil {
-		return crontab, nil
+		crontab.Close()
+		return nil, err
 	}
 
-	crontab.rancher = true
+	crontab.metadataMode = true
 
-	go crontab.watchRancherMetadata()
+	go crontab.watchMetadata()
 
 	return crontab, nil
+}
+
+// Close stops scheduled jobs and background metadata polling.
+func (ct *Crontab) Close() {
+	ct.stopOnce.Do(func() {
+		close(ct.stopCh)
+		ct.cronRunner.Stop()
+	})
 }
 
 // GetEntries lists the cron entries
@@ -66,10 +82,13 @@ func (ct *Crontab) GetEntries() []cron.Entry {
 
 // AddJob Adds a docker job to the crontab
 func (ct *Crontab) AddJob(id string, labels map[string]string, jobType string) error {
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+
 	var job *DockerJob
 
 	if _, ok := ct.jobs[id]; ok {
-		logrus.Debugf("Ignoring Event: %d with job id: %d", id, ct.jobs[id])
+		logrus.Debugf("Ignoring Event: %s with job entry: %v", id, ct.jobs[id])
 		return nil
 	}
 
@@ -82,7 +101,7 @@ func (ct *Crontab) AddJob(id string, labels map[string]string, jobType string) e
 	case "docker":
 		job = NewDockerJob(id, labels)
 	default:
-		logrus.Warnf("Unknown job type: %s", jobType)
+		return fmt.Errorf("unknown job type: %s", jobType)
 	}
 
 	jobID, err := ct.cronRunner.AddJob(schedule, job)
@@ -104,6 +123,8 @@ func (ct *Crontab) AddJob(id string, labels map[string]string, jobType string) e
 
 // RemoveJob remove a docker job from the cron queue
 func (ct *Crontab) RemoveJob(id string) {
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
 	if jobEntry, ok := ct.jobs[id]; ok {
 		ct.cronRunner.Remove(jobEntry.CronID)
 		delete(ct.jobs, id)
@@ -112,28 +133,37 @@ func (ct *Crontab) RemoveJob(id string) {
 }
 
 func (ct *Crontab) DeactivateJob(id string, labels map[string]string) error {
-	if !ct.rancher {
+	if !ct.metadataMode {
 		return nil
 	}
 
-	if jobEntry, ok := ct.jobs[id]; ok {
+	ct.mu.RLock()
+	jobEntry, ok := ct.jobs[id]
+	ct.mu.RUnlock()
+	if ok {
 		ct.setJobState(jobEntry)
 	}
 
 	return nil
 }
 
-func (ct *Crontab) checkRancherMetadataServiceState(uuid string) (string, error) {
-	service, err := ct.getRancherServiceByUUID(uuid)
-	return service.State, err
+func (ct *Crontab) checkMetadataServiceState(uuid string) (string, error) {
+	service, err := ct.getServiceByUUID(uuid)
+	if err != nil {
+		return "", err
+	}
+	return service.State, nil
 }
 
-func (ct *Crontab) getRancherServiceUUID(stackName, serviceName string) (string, error) {
-	service, err := ct.getRancherServiceByStackServiceName(stackName, serviceName)
-	return service.UUID, err
+func (ct *Crontab) getServiceUUID(stackName, serviceName string) (string, error) {
+	service, err := ct.getServiceByStackServiceName(stackName, serviceName)
+	if err != nil {
+		return "", err
+	}
+	return service.UUID, nil
 }
 
-func (ct *Crontab) getRancherServiceByStackServiceName(stackName, serviceName string) (metadata.Service, error) {
+func (ct *Crontab) getServiceByStackServiceName(stackName, serviceName string) (metadata.Service, error) {
 	stack, err := ct.mdClient.GetStackByName(stackName)
 	if err != nil {
 		return metadata.Service{}, err
@@ -150,7 +180,7 @@ func (ct *Crontab) getRancherServiceByStackServiceName(stackName, serviceName st
 	return metadata.Service{}, fmt.Errorf("service: %s not found in stack: %s", serviceName, stackName)
 }
 
-func (ct *Crontab) getRancherServiceByUUID(uuid string) (metadata.Service, error) {
+func (ct *Crontab) getServiceByUUID(uuid string) (metadata.Service, error) {
 	services, err := ct.mdClient.GetServices()
 	if err != nil {
 		return metadata.Service{}, err
@@ -165,57 +195,73 @@ func (ct *Crontab) getRancherServiceByUUID(uuid string) (metadata.Service, error
 	return metadata.Service{}, fmt.Errorf("service with uuid: %s not found", uuid)
 }
 
-func (ct *Crontab) watchRancherMetadata() {
+func (ct *Crontab) watchMetadata() {
+	ticker := time.NewTicker(getDuration(5))
+	defer ticker.Stop()
 	for {
-		logrus.Debug("Scanning Rancher Metadata")
+		logrus.Debug("Scanning metadata")
+		ct.mu.RLock()
+		jobs := make([]*JobEntry, 0, len(ct.jobs))
 		for _, job := range ct.jobs {
+			jobs = append(jobs, job)
+		}
+		ct.mu.RUnlock()
+		for _, job := range jobs {
 			ct.setJobState(job)
 		}
-		time.Sleep(getDuration(5))
+		select {
+		case <-ct.stopCh:
+			return
+		case <-ticker.C:
+		}
 	}
 }
 
 func (ct *Crontab) setJobState(job *JobEntry) {
-	if !ct.rancher {
+	if !ct.metadataMode {
 		return
 	}
 
-	var err error
+	serviceUUID := job.Job.GetServiceUUID()
+	if serviceUUID == "" {
+		stackName := getStackNameFromLabels(job.Job.Labels)
 
-	if job.Job.RancherServiceUUID == "" {
-		stackName := getRancherStackNameFromLabels(job.Job.Labels)
-
-		// The return value of getRancherServiceNameFromLabels for a sidekick is something like "mainname/sidekickname"
+		// A sidekick service label can look like "mainname/sidekickname".
 		// but we only need "sidekickname" for this to work in the sidekick case
-		serviceStackName := strings.Split(getRancherServiceNameFromLabels(job.Job.Labels), "/")
+		serviceStackName := strings.Split(getServiceNameFromLabels(job.Job.Labels), "/")
 		serviceName := serviceStackName[len(serviceStackName)-1]
-		job.Job.RancherServiceUUID, err = ct.getRancherServiceUUID(stackName, serviceName)
+		var err error
+		serviceUUID, err = ct.getServiceUUID(stackName, serviceName)
 		if err != nil {
 			logrus.Error(err)
+			return
 		}
-
+		job.Job.SetServiceUUID(serviceUUID)
 	}
 
-	state, err := ct.checkRancherMetadataServiceState(job.Job.RancherServiceUUID)
+	state, err := ct.checkMetadataServiceState(serviceUUID)
 	if err != nil {
 		logrus.Error(err)
+		return
 	}
 
 	// if the job is inactive...activate
-	if state == "active" && !job.Job.Active {
+	if state == "active" && !job.Job.IsActive() {
 		job.Job.Activate()
 	}
 
 	// if the job is active... Deactivate
-	if state != "active" && job.Job.Active {
+	if state != "active" && job.Job.IsActive() {
 		job.Job.Deactivate()
 	}
 }
 
 func (ct *Crontab) GetNumberOfActiveJobs() float64 {
+	ct.mu.RLock()
+	defer ct.mu.RUnlock()
 	var i float64
 	for _, job := range ct.jobs {
-		if job.Job.Active {
+		if job.Job.IsActive() {
 			i++
 		}
 	}
@@ -223,9 +269,11 @@ func (ct *Crontab) GetNumberOfActiveJobs() float64 {
 }
 
 func (ct *Crontab) GetNumberOfInactiveJobs() float64 {
+	ct.mu.RLock()
+	defer ct.mu.RUnlock()
 	var i float64
 	for _, job := range ct.jobs {
-		if !job.Job.Active {
+		if !job.Job.IsActive() {
 			i++
 		}
 	}

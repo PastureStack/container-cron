@@ -3,12 +3,10 @@ package events
 import (
 	"context"
 
-	"github.com/Sirupsen/logrus"
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/events"
-	"github.com/docker/docker/client"
+	"github.com/PastureStack/container-cron/cron"
+	"github.com/PastureStack/container-cron/dockerapi"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/rancher/container-crontab/cron"
+	"github.com/sirupsen/logrus"
 )
 
 // Handler handles messages
@@ -17,7 +15,7 @@ type Handler interface {
 }
 
 // Message is a message from an event stream
-type Message *events.Message
+type Message *dockerapi.Event
 
 // DockerHandler handles docker messages
 type DockerHandler struct {
@@ -25,36 +23,34 @@ type DockerHandler struct {
 }
 
 type DockerHandlerOpts struct {
-	RancherMode bool
-	MetadataURL string
+	MetadataMode bool
+	MetadataURL  string
 }
 
 // NewDockerHandler returns a docker handler with crontab
 func NewDockerHandler(opts *DockerHandlerOpts) (*DockerHandler, error) {
-	crontab, err := cron.NewCrontab()
+	var crontab *cron.Crontab
+	var err error
+	if opts.MetadataMode {
+		logrus.Infof("Using metadata mode with URL = %s", opts.MetadataURL)
+		crontab, err = cron.NewMetadataAwareCrontab(opts.MetadataURL)
+	} else {
+		crontab, err = cron.NewCrontab()
+	}
 	if err != nil {
 		return nil, err
 	}
 
-	if opts.RancherMode {
-		logrus.Infof("Using Rancher Mode with metadata URL = %s", opts.MetadataURL)
-		crontab, err = cron.NewRancherTypeCrontab(opts.MetadataURL)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	dClient, err := client.NewEnvClient()
+	dClient, err := dockerapi.NewFromEnv()
 	if err != nil {
+		crontab.Close()
 		return nil, err
 	}
 	defer dClient.Close()
 
-	containers, err := dClient.ContainerList(context.Background(), types.ContainerListOptions{
-		All: true,
-	})
+	containers, err := dClient.ContainerList(context.Background(), true)
 	if err != nil {
-		logrus.Fatal(err)
+		crontab.Close()
 		return nil, err
 	}
 
@@ -62,7 +58,9 @@ func NewDockerHandler(opts *DockerHandlerOpts) (*DockerHandler, error) {
 	logrus.Infof("Scanning for container cron entries")
 	for _, container := range containers {
 		if _, ok := container.Labels["cron.schedule"]; ok {
-			crontab.AddJob(container.ID, container.Labels, "docker")
+			if err := crontab.AddJob(container.ID, container.Labels, "docker"); err != nil {
+				logrus.Errorf("failed to add container %s: %v", container.ID, err)
+			}
 		}
 	}
 
@@ -73,17 +71,24 @@ func NewDockerHandler(opts *DockerHandlerOpts) (*DockerHandler, error) {
 
 // Handle implements handler interface
 func (dh DockerHandler) Handle(msg Message) {
+	if msg == nil {
+		return
+	}
 	// Adding a cron.schedule label flags the container for deeper inspection
 	// With this service
 	if _, ok := msg.Actor.Attributes["cron.schedule"]; ok {
 		if msg.Action == "start" || msg.Action == "create" {
 			logrus.Debugf("Processing %s event for container: %s", msg.Action, msg.ID)
-			dh.Crontab.AddJob(msg.ID, msg.Actor.Attributes, "docker")
+			if err := dh.Crontab.AddJob(msg.ID, msg.Actor.Attributes, "docker"); err != nil {
+				logrus.Errorf("failed to add container %s: %v", msg.ID, err)
+			}
 		}
 
 		if msg.Action == "stop" || msg.Action == "die" {
-			logrus.Debugf("Proccessing %s event for container: %s", msg.Action, msg.ID)
-			dh.Crontab.DeactivateJob(msg.ID, msg.Actor.Attributes)
+			logrus.Debugf("Processing %s event for container: %s", msg.Action, msg.ID)
+			if err := dh.Crontab.DeactivateJob(msg.ID, msg.Actor.Attributes); err != nil {
+				logrus.Errorf("failed to deactivate container %s: %v", msg.ID, err)
+			}
 		}
 
 		if msg.Action == "destroy" {

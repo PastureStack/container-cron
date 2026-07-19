@@ -1,0 +1,50 @@
+#!/bin/bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+source scripts/version
+
+IMAGE_NAME=${IMAGE_NAME:-ghcr.io/pasturestack/container-cron}
+TAG=${TAG:-${VERSION}}
+TEST_IMAGE=${TEST_IMAGE:-ubuntu:26.04}
+suffix="$(date +%s)-$$"
+scheduler="pasturestack-container-cron-smoke-${suffix}"
+start_target="pasturestack-container-cron-start-${suffix}"
+stop_target="pasturestack-container-cron-stop-${suffix}"
+
+cleanup() {
+    docker rm -f "${scheduler}" "${start_target}" "${stop_target}" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+docker create \
+    --name "${start_target}" \
+    --label 'cron.schedule=* * * * * *' \
+    --label 'cron.action=start' \
+    "${TEST_IMAGE}" sleep infinity >/dev/null
+
+docker run -d \
+    --name "${stop_target}" \
+    --label 'cron.schedule=* * * * * *' \
+    --label 'cron.action=stop' \
+    "${TEST_IMAGE}" sleep infinity >/dev/null
+
+docker run -d \
+    --name "${scheduler}" \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    "${IMAGE_NAME}:${TAG}" >/dev/null
+
+deadline=$((SECONDS + 20))
+while [ "${SECONDS}" -lt "${deadline}" ]; do
+    start_state="$(docker inspect "${start_target}" --format '{{.State.Running}}')"
+    stop_state="$(docker inspect "${stop_target}" --format '{{.State.Running}}')"
+    if [ "${start_state}" = "true" ] && [ "${stop_state}" = "false" ]; then
+        echo "Container Cron lifecycle smoke test passed"
+        exit 0
+    fi
+    sleep 1
+done
+
+docker logs "${scheduler}" >&2 || true
+echo "Container Cron lifecycle smoke test timed out" >&2
+exit 1

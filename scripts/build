@@ -6,5 +6,5 @@ source $(dirname $0)/version
 cd $(dirname $0)/..
 
 mkdir -p bin
-[ "$(uname)" != "Darwin" ] && LINKFLAGS="-linkmode external -extldflags -static -s"
-go build -ldflags "-X main.VERSION=$VERSION $LINKFLAGS" -o bin/container-crontab
+CGO_ENABLED=0 go build -trimpath -ldflags "-X main.VERSION=$VERSION -s -w" -o bin/container-cron
+ln -sf container-cron bin/container-crontab

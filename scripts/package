@@ -10,16 +10,26 @@ SUFFIX=""
 cd $(dirname $0)/../package
 
 TAG=${TAG:-${VERSION}${SUFFIX}}
-REPO=${REPO:-rancher}
+IMAGE_NAME=${IMAGE_NAME:-ghcr.io/pasturestack/container-cron}
+REVISION=${REVISION:-$(git rev-parse HEAD)}
 
-cp ../bin/container-crontab .
+cp ../bin/container-cron .
+cp ../LICENSE .
+cp ../SECURITY.md .
+cp ../UNOFFICIAL_MAINTENANCE_FORK.md .
+cp ../ORIGIN.md .
+cp ../COMPATIBILITY.md .
 
-if dapper -d --build -f Dockerfile -- -t ${REPO}/container-crontab:${TAG}${SUFFIX} .; then
-    echo Built ${REPO}/container-crontab:${TAG}
-elif [ "$?" != "42" ]; then
-    exit 1
-else
-    echo "Skipping ${TAG}"
-    exit 0
+docker_build_network_arg=()
+if [ -n "${DOCKER_BUILD_NETWORK:-}" ]; then
+    docker_build_network_arg=(--network="${DOCKER_BUILD_NETWORK}")
 fi
+DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-0}" docker build "${docker_build_network_arg[@]}" \
+    --build-arg UBUNTU_MIRROR="${UBUNTU_MIRROR:-http://archive.ubuntu.com/ubuntu}" \
+    --build-arg VERSION="${TAG}" \
+    --build-arg REVISION="${REVISION}" \
+    -t "${IMAGE_NAME}:${TAG}" .
 
+mkdir -p ../dist
+echo "${IMAGE_NAME}:${TAG}" > ../dist/images
+echo "Built ${IMAGE_NAME}:${TAG}"
