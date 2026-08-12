@@ -1,0 +1,327 @@
+name: Security release gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'verification/container-cron-*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-cron-security-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-test-scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      DAPPER_IMAGE: pasturestack/container-cron-dapper:${{ github.sha }}
+      RUNTIME_IMAGE: pasturestack/container-cron:v0.6.1
+      TRIVY_IMAGE: aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
+      VERSION_OVERRIDE: v0.6.1
+
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Record candidate identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain)"
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/source-revision.txt
+          sha256sum \
+            Dockerfile.dapper \
+            package/Dockerfile \
+            scripts/package \
+            security/dapper.openvex.json \
+            ubuntu-apt.lock \
+            go.mod \
+            go.sum \
+            > evidence/source-locks.sha256
+
+      - name: Build, test, validate, and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg DAPPER_HOST_ARCH=amd64 \
+            --tag "$DAPPER_IMAGE" \
+            --file Dockerfile.dapper \
+            .
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/go/src/github.com/PastureStack/container-cron" \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            --env "DAPPER_UID=$(id -u)" \
+            --env "DAPPER_GID=$(id -g)" \
+            --env ARCH=amd64 \
+            --env "VERSION_OVERRIDE=$VERSION_OVERRIDE" \
+            --env "IMAGE_NAME=pasturestack/container-cron" \
+            --env TAG=v0.6.1 \
+            "$DAPPER_IMAGE" ci
+          test -x bin/container-cron
+          test -L bin/container-crontab
+          bin/container-cron --version | grep -F 'v0.6.1' >/dev/null
+          test "$(cat dist/images)" = "$RUNTIME_IMAGE"
+          docker image inspect "$RUNTIME_IMAGE" >/dev/null
+
+      - name: Run Docker lifecycle smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION_OVERRIDE=v0.6.1 \
+            TAG=v0.6.1 \
+            IMAGE_NAME=pasturestack/container-cron \
+            ./scripts/smoke
+
+      - name: Record resolved build inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker inspect "$DAPPER_IMAGE" > evidence/dapper-image-inspect.json
+          docker inspect "$RUNTIME_IMAGE" > evidence/runtime-image-inspect.json
+          docker run --rm --entrypoint sh "$DAPPER_IMAGE" -lc \
+            "printf 'package\\tversion\\n'; dpkg-query -W -f='\${binary:Package}\\t\${Version}\\n' | LC_ALL=C sort" \
+            > evidence/dapper-dpkg.tsv
+          docker run --rm --entrypoint sh "$RUNTIME_IMAGE" -lc \
+            "printf 'package\\tversion\\n'; dpkg-query -W -f='\${binary:Package}\\t\${Version}\\n' | LC_ALL=C sort" \
+            > evidence/runtime-dpkg.tsv
+          docker run --rm --entrypoint go \
+            --volume "$PWD:/work:ro" "$DAPPER_IMAGE" \
+            version -m /work/bin/container-cron \
+            > evidence/product-go-version.txt
+          docker run --rm --entrypoint sh "$DAPPER_IMAGE" -lc \
+            'docker --version; go version -m /usr/bin/docker' \
+            > evidence/docker-cli-version.txt
+          grep -F $'build\tCGO_ENABLED=0' evidence/product-go-version.txt >/dev/null
+          grep -F 'Docker version 29.7.2' evidence/docker-cli-version.txt >/dev/null
+          docker run --rm --entrypoint sh "$DAPPER_IMAGE" -lc \
+            'test ! -e /usr/libexec/docker/cli-plugins/docker-buildx'
+          sha256sum bin/container-cron > evidence/container-cron.sha256
+
+      - name: Scan source, product, and images
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "$TRIVY_IMAGE"
+          trivy_cache="$RUNNER_TEMP/trivy-cache"
+          source_tree="$(mktemp -d)"
+          product_tree="$(mktemp -d)"
+          dapper_rootfs="$(mktemp -d)"
+          dapper_container=""
+          cleanup_scan() {
+            if [ -n "$dapper_container" ]; then
+              docker rm -f "$dapper_container" >/dev/null 2>&1 || true
+            fi
+            rm -rf "$source_tree" "$product_tree" "$dapper_rootfs" \
+              "$RUNNER_TEMP/dapper-rootfs.tar"
+          }
+          trap cleanup_scan EXIT
+          mkdir -p "$trivy_cache"
+          git archive --format=tar HEAD | tar -xf - -C "$source_tree"
+          cp bin/container-cron "$product_tree/container-cron"
+
+          # Warm the pinned scanner database once, then run every gate against
+          # that exact local snapshot so all scopes are directly comparable.
+          docker run --rm \
+            -v "$trivy_cache:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" image --download-db-only
+
+          docker run --rm \
+            -v "$source_tree:/scan:ro" \
+            -v "$PWD/evidence:/evidence" \
+            -v "$trivy_cache:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" fs \
+            --skip-db-update --offline-scan --scanners vuln,secret --format json \
+            --output /evidence/source-security.json /scan
+          docker run --rm \
+            -v "$product_tree:/scan:ro" \
+            -v "$PWD/evidence:/evidence" \
+            -v "$trivy_cache:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" rootfs \
+            --skip-db-update --offline-scan --scanners vuln,secret --format json \
+            --output /evidence/product-security.json /scan
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD:/work" -w /work \
+            -v "$trivy_cache:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" image \
+            --skip-db-update --offline-scan --scanners vuln,secret --format json \
+            --output /work/evidence/runtime-security.json "$RUNTIME_IMAGE"
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD:/work" -w /work \
+            -v "$trivy_cache:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" image \
+            --skip-db-update --offline-scan --scanners vuln,secret --format json \
+            --output /work/evidence/dapper-image-metadata-raw.json "$DAPPER_IMAGE"
+
+          # Gate the actual exported filesystem. Image metadata can contain an
+          # upstream SBOM for packages that are no longer present, so retain
+          # that report as evidence but do not use it as the applicability
+          # decision.
+          dapper_container="$(docker create "$DAPPER_IMAGE")"
+          docker export --output "$RUNNER_TEMP/dapper-rootfs.tar" "$dapper_container"
+          docker rm "$dapper_container"
+          dapper_container=""
+          tar --no-same-owner --no-same-permissions \
+            -xf "$RUNNER_TEMP/dapper-rootfs.tar" -C "$dapper_rootfs"
+          docker run --rm \
+            -v "$dapper_rootfs:/scan:ro" \
+            -v "$PWD/evidence:/evidence" \
+            -v "$trivy_cache:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" rootfs \
+            --skip-db-update --offline-scan --scanners vuln,secret --format json \
+            --output /evidence/dapper-rootfs-raw.json /scan
+
+          jq -r '
+            .Results[]?.Vulnerabilities[]?
+            | select(.Severity == "CRITICAL" or .Severity == "HIGH")
+            | [.VulnerabilityID, .PkgIdentifier.PURL]
+            | @tsv
+          ' evidence/dapper-rootfs-raw.json | LC_ALL=C sort -u \
+            > /tmp/dapper-critical-high.tsv
+          jq -r '
+            .statements[]?
+            | select(
+                .status == "not_affected"
+                and .justification == "vulnerable_code_not_present"
+              )
+            | .vulnerability.name as $id
+            | .products[]?
+            | [$id, .["@id"]]
+            | @tsv
+          ' security/dapper.openvex.json | LC_ALL=C sort -u \
+            > /tmp/dapper-vex.tsv
+          test -s /tmp/dapper-critical-high.tsv
+          diff -u /tmp/dapper-critical-high.tsv /tmp/dapper-vex.tsv
+          test "$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL" or .Severity == "HIGH")] | length' evidence/dapper-rootfs-raw.json)" \
+            -eq "$(wc -l < /tmp/dapper-critical-high.tsv)"
+          test "$(jq '.statements | length' security/dapper.openvex.json)" \
+            -eq "$(wc -l < /tmp/dapper-vex.tsv)"
+          jq -e '
+            all(
+              .statements[];
+              .status == "not_affected"
+              and .justification == "vulnerable_code_not_present"
+              and ((.impact_statement | type) == "string")
+              and ((.impact_statement | length) > 0)
+            )
+          ' security/dapper.openvex.json >/dev/null
+          grep -F $'linux-libc-dev:amd64\t7.0.0-29.29' evidence/dapper-dpkg.tsv >/dev/null
+          if grep -Eq '^linux-(image|modules)([-:]|[[:space:]])' evidence/dapper-dpkg.tsv; then
+            printf 'Unexpected Linux kernel runtime package in Dapper image\n' >&2
+            exit 1
+          fi
+          test -z "$(find "$dapper_rootfs" -type f \
+            \( -path '*/boot/vmlinuz*' -o -path '*/lib/modules/*' -o -path '*/usr/lib/modules/*' \) \
+            -print -quit)"
+          cp /tmp/dapper-critical-high.tsv evidence/dapper-critical-high.tsv
+          cp /tmp/dapper-vex.tsv evidence/dapper-openvex.tsv
+
+          docker run --rm \
+            -v "$source_tree:/scan:ro" \
+            -v "$PWD/evidence:/evidence" \
+            -v "$trivy_cache:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" fs --skip-db-update --offline-scan --format cyclonedx \
+            --output /evidence/source.cdx.json /scan
+          docker run --rm \
+            -v "$product_tree:/scan:ro" \
+            -v "$PWD/evidence:/evidence" \
+            -v "$trivy_cache:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" rootfs --skip-db-update --offline-scan --format cyclonedx \
+            --output /evidence/product.cdx.json /scan
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD:/work" -w /work \
+            -v "$trivy_cache:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" image --skip-db-update --offline-scan --format cyclonedx \
+            --output /work/evidence/runtime.cdx.json "$RUNTIME_IMAGE"
+          docker run --rm \
+            -v "$dapper_rootfs:/scan:ro" \
+            -v "$PWD/evidence:/evidence" \
+            -v "$trivy_cache:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" rootfs --skip-db-update --offline-scan --format cyclonedx \
+            --output /evidence/dapper-rootfs.cdx.json /scan
+
+      - name: Enforce zero Critical, High, or secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > evidence/security-summary.txt
+          for scope in source product runtime; do
+            report="evidence/${scope}-security.json"
+            secrets=$(jq '[.Results[]?.Secrets[]?] | length' "$report")
+            critical=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' "$report")
+            high=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' "$report")
+            printf '%s_secrets=%s\n%s_critical=%s\n%s_high=%s\n' \
+              "$scope" "$secrets" "$scope" "$critical" "$scope" "$high" \
+              | tee -a evidence/security-summary.txt
+            test "$secrets" -eq 0
+            test "$critical" -eq 0
+            test "$high" -eq 0
+          done
+          dapper_secrets=$(jq '[.Results[]?.Secrets[]?] | length' evidence/dapper-rootfs-raw.json)
+          dapper_raw_critical=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' evidence/dapper-rootfs-raw.json)
+          dapper_raw_high=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' evidence/dapper-rootfs-raw.json)
+          dapper_reviewed_critical=$(jq -n \
+            --rawfile pairs evidence/dapper-critical-high.tsv \
+            --slurpfile report evidence/dapper-rootfs-raw.json \
+            '[($pairs | split("\n")[] | select(length > 0) | split("\t")[0])] as $ids
+            | [$report[0].Results[]?.Vulnerabilities[]?
+               | select(.Severity == "CRITICAL" and (.VulnerabilityID as $id | $ids | index($id)))]
+            | length')
+          dapper_reviewed_high=$(jq -n \
+            --rawfile pairs evidence/dapper-critical-high.tsv \
+            --slurpfile report evidence/dapper-rootfs-raw.json \
+            '[($pairs | split("\n")[] | select(length > 0) | split("\t")[0])] as $ids
+            | [$report[0].Results[]?.Vulnerabilities[]?
+               | select(.Severity == "HIGH" and (.VulnerabilityID as $id | $ids | index($id)))]
+            | length')
+          dapper_applicable_critical=$((dapper_raw_critical - dapper_reviewed_critical))
+          dapper_applicable_high=$((dapper_raw_high - dapper_reviewed_high))
+          jq -n \
+            --arg method 'exact-id-purl-set-match' \
+            --arg source 'evidence/dapper-rootfs-raw.json' \
+            --arg vex 'security/dapper.openvex.json' \
+            --argjson raw_critical "$dapper_raw_critical" \
+            --argjson raw_high "$dapper_raw_high" \
+            --argjson reviewed_critical "$dapper_reviewed_critical" \
+            --argjson reviewed_high "$dapper_reviewed_high" \
+            --argjson applicable_critical "$dapper_applicable_critical" \
+            --argjson applicable_high "$dapper_applicable_high" \
+            '{method:$method,source_report:$source,vex_document:$vex,raw:{critical:$raw_critical,high:$raw_high},reviewed_not_affected:{critical:$reviewed_critical,high:$reviewed_high},applicable:{critical:$applicable_critical,high:$applicable_high}}' \
+            > evidence/dapper-openvex-review.json
+          printf 'dapper_secrets=%s\ndapper_raw_critical=%s\ndapper_raw_high=%s\ndapper_applicable_critical=%s\ndapper_applicable_high=%s\n' \
+            "$dapper_secrets" "$dapper_raw_critical" "$dapper_raw_high" \
+            "$dapper_applicable_critical" "$dapper_applicable_high" \
+            | tee -a evidence/security-summary.txt
+          test "$dapper_secrets" -eq 0
+          test "$dapper_applicable_critical" -eq 0
+          test "$dapper_applicable_high" -eq 0
+
+      - name: Upload review evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: container-cron-security-${{ github.sha }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Clean runner resources
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          docker rm -f $(docker ps -aq --filter ancestor="$DAPPER_IMAGE") 2>/dev/null
+          docker image rm -f "$DAPPER_IMAGE" "$RUNTIME_IMAGE" "$TRIVY_IMAGE" 2>/dev/null
+          docker builder prune --all --force >/dev/null 2>&1
+          sudo rm -rf bin dist

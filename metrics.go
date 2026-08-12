@@ -5,10 +5,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/Sirupsen/logrus"
+	"github.com/PastureStack/container-cron/events"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/rancher/container-crontab/events"
+	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -19,8 +19,8 @@ func initMetrics() {
 	hostname, _ := os.Hostname()
 	activeJobGauge = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name:        "rancher_container_crontab_jobs_total",
-			Help:        "Number of container crontab job entries",
+			Name:        "pasturestack_container_cron_jobs",
+			Help:        "Current number of container cron jobs",
 			ConstLabels: prometheus.Labels{"hostname": hostname},
 		}, []string{"state"})
 	prometheus.MustRegister(activeJobGauge)

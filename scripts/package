@@ -1,25 +1,44 @@
 #!/bin/bash
 set -e
 
-source $(dirname $0)/version
+script_dir=$(cd "$(dirname "$0")" && pwd)
+repo_root=$(cd "${script_dir}/.." && pwd)
+source "${script_dir}/version"
 
 ARCH=${ARCH:?"ARCH not set"}
 SUFFIX=""
 [ "${ARCH}" != "amd64" ] && SUFFIX="_${ARCH}"
 
-cd $(dirname $0)/../package
-
 TAG=${TAG:-${VERSION}${SUFFIX}}
-REPO=${REPO:-rancher}
+IMAGE_NAME=${IMAGE_NAME:-ghcr.io/pasturestack/container-cron}
+REVISION=${REVISION:-$(git -C "${repo_root}" rev-parse HEAD)}
 
-cp ../bin/container-crontab .
+build_context=$(mktemp -d)
+trap 'rm -rf "${build_context}"' EXIT
+cp "${repo_root}/package/Dockerfile" "${build_context}/Dockerfile"
+cp "${repo_root}/bin/container-cron" "${build_context}/container-cron"
+cp "${repo_root}/LICENSE" "${build_context}/LICENSE"
+cp "${repo_root}/SECURITY.md" "${build_context}/SECURITY.md"
+cp "${repo_root}/UNOFFICIAL_MAINTENANCE_FORK.md" "${build_context}/UNOFFICIAL_MAINTENANCE_FORK.md"
+cp "${repo_root}/ORIGIN.md" "${build_context}/ORIGIN.md"
+cp "${repo_root}/COMPATIBILITY.md" "${build_context}/COMPATIBILITY.md"
+cp "${repo_root}/ubuntu-apt.lock" "${build_context}/ubuntu-apt.lock"
+ca_certificates_url="https://archive.ubuntu.com/ubuntu/pool/main/c/ca-certificates/ca-certificates_20260601~26.04.1_all.deb"
+ca_certificates_sha256="6077d27c6b6f8b23590cb01ff877ed8c804a67a5442cc32b5a33da10d2bd0e90"
+curl -fsSL --retry 5 --retry-all-errors \
+    -o "${build_context}/ca-certificates.deb" "${ca_certificates_url}"
+echo "${ca_certificates_sha256}  ${build_context}/ca-certificates.deb" \
+    | sha256sum -c -
 
-if dapper -d --build -f Dockerfile -- -t ${REPO}/container-crontab:${TAG}${SUFFIX} .; then
-    echo Built ${REPO}/container-crontab:${TAG}
-elif [ "$?" != "42" ]; then
-    exit 1
-else
-    echo "Skipping ${TAG}"
-    exit 0
+docker_build_network_arg=()
+if [ -n "${DOCKER_BUILD_NETWORK:-}" ]; then
+    docker_build_network_arg=(--network="${DOCKER_BUILD_NETWORK}")
 fi
+DOCKER_BUILDKIT=0 docker build "${docker_build_network_arg[@]}" \
+    --build-arg VERSION="${TAG}" \
+    --build-arg REVISION="${REVISION}" \
+    -t "${IMAGE_NAME}:${TAG}" "${build_context}"
 
+mkdir -p "${repo_root}/dist"
+echo "${IMAGE_NAME}:${TAG}" > "${repo_root}/dist/images"
+echo "Built ${IMAGE_NAME}:${TAG}"

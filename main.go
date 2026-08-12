@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"os"
+	"time"
 
-	"github.com/Sirupsen/logrus"
-	"github.com/rancher/container-crontab/events"
+	"github.com/PastureStack/container-cron/events"
+	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
 )
 
@@ -23,9 +25,9 @@ func beforeApp(c *cli.Context) error {
 
 func main() {
 	app := cli.NewApp()
-	app.Name = "container-crontab"
+	app.Name = "container-cron"
 	app.Version = VERSION
-	app.Usage = "container-crontab"
+	app.Usage = "Run scheduled actions against Docker containers"
 	app.Action = start
 	app.Before = beforeApp
 	app.Flags = []cli.Flag{
@@ -33,8 +35,8 @@ func main() {
 			Name: "debug,d",
 		},
 		cli.BoolFlag{
-			Name:  "rancher-mode,r",
-			Usage: "Allow Rancher ",
+			Name:  "metadata-mode,m",
+			Usage: "Enable service-state checks through the metadata API",
 		},
 		cli.StringFlag{
 			Name:  "metadata-url",
@@ -46,13 +48,15 @@ func main() {
 		},
 	}
 
-	app.Run(os.Args)
+	if err := app.Run(os.Args); err != nil {
+		logrus.Fatal(err)
+	}
 }
 
 func start(c *cli.Context) error {
 	handler, err := events.NewDockerHandler(&events.DockerHandlerOpts{
-		RancherMode: c.GlobalBool("rancher-mode"),
-		MetadataURL: c.GlobalString("metadata-url"),
+		MetadataMode: c.GlobalBool("metadata-mode"),
+		MetadataURL:  c.GlobalString("metadata-url"),
 	})
 	if err != nil {
 		return err
@@ -67,7 +71,5 @@ func start(c *cli.Context) error {
 		go MetricsServer(handler)
 	}
 
-	events.StartRouter(router, handler)
-
-	return nil
+	return events.StartRouter(context.Background(), router, handler, time.Second)
 }

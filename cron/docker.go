@@ -3,28 +3,31 @@ package cron
 import (
 	"context"
 	"strconv"
+	"sync"
 	"time"
 
-	"github.com/Sirupsen/logrus"
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/client"
+	"github.com/PastureStack/container-cron/dockerapi"
+	"github.com/sirupsen/logrus"
 )
 
 // DockerJob implements the cron job interface
 type DockerJob struct {
-	ID                 string
-	Action             string
-	Schedule           string
-	Leader             bool
-	Labels             map[string]string
-	RancherServiceUUID string
-	Active             bool
-	lastError          error
-	restartTimeout     time.Duration
+	mu             sync.RWMutex
+	ID             string
+	Action         string
+	Schedule       string
+	Leader         bool
+	Labels         map[string]string
+	ServiceUUID    string
+	Active         bool
+	lastError      error
+	restartTimeout time.Duration
 }
 
 // Err returns last error message
 func (dj *DockerJob) Err() error {
+	dj.mu.RLock()
+	defer dj.mu.RUnlock()
 	return dj.lastError
 }
 
@@ -32,9 +35,12 @@ func (dj *DockerJob) Err() error {
 func (dj *DockerJob) Run() {
 	defer dj.resetErr()
 
-	if dj.Active {
-		logrus.Debugf("Executing: %s on %s", dj.Action, dj.ID)
-		switch dj.Action {
+	dj.mu.RLock()
+	active, action, id := dj.Active, dj.Action, dj.ID
+	dj.mu.RUnlock()
+	if active {
+		logrus.Debugf("Executing: %s on %s", action, id)
+		switch action {
 		case "start":
 			dj.start()
 		case "restart":
@@ -42,7 +48,7 @@ func (dj *DockerJob) Run() {
 		case "stop":
 			dj.stop()
 		default:
-			logrus.Errorf("Unsupported action: %s for container id: %s", dj.Action, dj.ID)
+			logrus.Errorf("Unsupported action: %s for container id: %s", action, id)
 		}
 	}
 
@@ -52,6 +58,8 @@ func (dj *DockerJob) Run() {
 }
 
 func (dj *DockerJob) resetErr() {
+	dj.mu.Lock()
+	defer dj.mu.Unlock()
 	if dj.lastError != nil {
 		logrus.Debugf("Reseting error on %s", dj.ID)
 	}
@@ -59,37 +67,44 @@ func (dj *DockerJob) resetErr() {
 }
 
 func (dj *DockerJob) start() {
-	var client *client.Client
-	client, dj.lastError = getDockerClient()
-	defer client.Close()
-
-	if dj.Err() == nil {
-		dj.lastError = client.ContainerStart(context.Background(), dj.ID, types.ContainerStartOptions{})
-	}
+	dj.withDockerClient(func(client *dockerapi.Client) error {
+		return client.ContainerStart(context.Background(), dj.ID)
+	})
 }
 
 func (dj *DockerJob) restart() {
-	var client *client.Client
-	client, dj.lastError = getDockerClient()
-	defer client.Close()
-
-	if dj.Err() == nil {
-		dj.lastError = client.ContainerRestart(context.Background(), dj.ID, &dj.restartTimeout)
-	}
+	dj.withDockerClient(func(client *dockerapi.Client) error {
+		return client.ContainerRestart(context.Background(), dj.ID, dockerTimeoutSeconds(dj.restartTimeout))
+	})
 }
 
 func (dj *DockerJob) stop() {
-	var client *client.Client
-	client, dj.lastError = getDockerClient()
-	defer client.Close()
-
-	if dj.Err() == nil {
-		dj.lastError = client.ContainerStop(context.Background(), dj.ID, &dj.restartTimeout)
-	}
+	dj.withDockerClient(func(client *dockerapi.Client) error {
+		return client.ContainerStop(context.Background(), dj.ID, dockerTimeoutSeconds(dj.restartTimeout))
+	})
 }
 
-func getDockerClient() (*client.Client, error) {
-	return client.NewEnvClient()
+func (dj *DockerJob) withDockerClient(action func(*dockerapi.Client) error) {
+	client, err := getDockerClient()
+	if err == nil {
+		defer client.Close()
+		err = action(client)
+	}
+	dj.mu.Lock()
+	dj.lastError = err
+	dj.mu.Unlock()
+}
+
+func getDockerClient() (*dockerapi.Client, error) {
+	return dockerapi.NewFromEnv()
+}
+
+func dockerTimeoutSeconds(timeout time.Duration) int {
+	seconds := int(timeout / time.Second)
+	if seconds < 1 {
+		seconds = 1
+	}
+	return seconds
 }
 
 // NewDockerJob creates a DockerJob and sets defaults
@@ -129,10 +144,32 @@ func NewDockerJob(id string, labels map[string]string) *DockerJob {
 // Deactivate Sets the Actve attribute to false. This will skip running
 func (dj *DockerJob) Deactivate() {
 	logrus.Debugf("Deactivating: %s", dj.ID)
+	dj.mu.Lock()
+	defer dj.mu.Unlock()
 	dj.Active = false
 }
 
 func (dj *DockerJob) Activate() {
 	logrus.Debugf("Activating: %s", dj.ID)
+	dj.mu.Lock()
+	defer dj.mu.Unlock()
 	dj.Active = true
+}
+
+func (dj *DockerJob) IsActive() bool {
+	dj.mu.RLock()
+	defer dj.mu.RUnlock()
+	return dj.Active
+}
+
+func (dj *DockerJob) GetServiceUUID() string {
+	dj.mu.RLock()
+	defer dj.mu.RUnlock()
+	return dj.ServiceUUID
+}
+
+func (dj *DockerJob) SetServiceUUID(uuid string) {
+	dj.mu.Lock()
+	defer dj.mu.Unlock()
+	dj.ServiceUUID = uuid
 }

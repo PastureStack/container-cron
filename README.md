@@ -1,72 +1,91 @@
-container-crontab
-========
+# PastureStack Container Cron
 
-A microservice that will perform actions on a Docker container based on cron schedule.
+Container Cron watches Docker events and runs `start`, `stop`, or `restart`
+actions according to cron expressions stored in container labels.
 
-## Building
+The maintained runtime targets the PastureStack 1.6 compatibility control
+plane and current Docker Engine releases.
 
-`make`
+## Build and test
 
-## Running
+The supported development workflow uses the repository's disposable Dapper
+image:
+
+```sh
+make ci
+```
+
+The resulting executable is `bin/container-cron`. The build also creates the
+legacy `bin/container-crontab` executable alias for staged upgrades.
+
+Run the isolated container lifecycle test after packaging:
+
+```sh
+VERSION_OVERRIDE=v0.6.1 TAG=v0.6.1 make smoke
+```
+
+The smoke test creates only uniquely named disposable containers and verifies
+that scheduled `start` and `stop` actions both reach the Docker daemon.
+
+## Run
 
 Standard Docker mode:
 
-`./bin/container-crontab`
-
-Rancher Mode:
-
-`./bin/container-crontab --rancher-mode [--metadata-url http://rancher-metadata/latest]`
-
-## Usage
-
-### Standard Mode:
-Once `container-crontab` is up and running it watches Docker socket events for `create, start and destroy` events.
-If a container is found to have the label `cron.schedule` then it will be added to the crontab based on the schedule.
-
-Cron scheduling rules follow: [Expression Format](https://godoc.org/github.com/robfig/cron#hdr-CRON_Expression_Format)
-
-Use [Cron Expression Generator & Explainer](https://www.freeformatter.com/cron-expression-generator-quartz.html) to quickly generate cron expressions and convert them to readable text format.
-
-### Rancher Mode:
-When running in Rancher mode, the service watches Rancher metadata for service state. If the service is in any other mode
-then Active, then the job is disabled. 
-
-It watches metadata on a 5 second interval, so there is a small window where a job could be run when the state is changing. If
-the container is stopped as part of the upgrade or service deactivate, that event will be immediate. When services are reactivated
-there is a 5 second window for the job to be re-activated.
-
-## Override labels that can be applied
-
-To override the default start action on the container, set the label `cron.action` equal to `stop` or `restart`.
-
-To override the default 10 second restart/stop timeout set the label `cron.restart_timeout` to the number of
-seconds you would like. For instance for 20 seconds: `cron.restart_timeout=20`.
-
-## Examples
+```sh
+./bin/container-cron
 ```
-# Restart every minute
-> docker run -d --label=cron.schedule="0 * * * * ?" ubuntu:16.04 date
+
+Metadata-aware mode:
+
+```sh
+./bin/container-cron --metadata-mode \
+  --metadata-url http://169.254.169.250/2016-07-29
 ```
+
+The process needs access to the Docker API. Mounting `/var/run/docker.sock`
+grants host-level control and must only be done on trusted nodes.
+
+`DOCKER_HOST` supports an absolute Unix socket or one exact TCP, HTTP, or HTTPS
+endpoint. Network endpoints may contain only a scheme, host, and optional port.
+Container Cron pins every request to that endpoint and rejects HTTP redirects.
+Use verified TLS for remote Docker daemons; unencrypted TCP should be limited to
+an isolated trusted network.
+
+## Labels
+
+- `cron.schedule`: required cron expression.
+- `cron.action`: optional `start`, `stop`, or `restart`; defaults to `start`.
+- `cron.restart_timeout`: optional stop/restart timeout in seconds; defaults to
+  10 seconds.
+- `cron.leader`: retained for compatibility with existing workload metadata.
+
+Cron expressions use the six-field format supported by `robfig/cron.v2`.
 
 ## Metrics
 
-Starting in v0.3.0 the container-crontab exposes a prometheus metrics endpoint `http://<ip>:9191/metrics` when started with the `--metrics` CLI option.
-From that you can get a guage on the number of Jobs sliced by Active/Inactive states. It also provides other
-golang information about the program.
+Pass `--metrics` to expose Prometheus metrics on port `9191`. The current job
+count is reported as:
 
-`rancher_container_crontab_jobs_total{hostname, state}`
+```text
+pasturestack_container_cron_jobs{hostname="...",state="active|inactive"}
+```
+
+## Compatibility
+
+Runtime aliases and legacy metadata contracts are documented in
+[COMPATIBILITY.md](COMPATIBILITY.md). New deployments should use only the
+PastureStack names shown in this README.
+
+## Origin and independence
+
+PastureStack is an independent community effort to preserve, audit, and modernize the Rancher 1.6 ecosystem. It is not affiliated with or endorsed by Rancher Labs or SUSE.
+
+**Upstream:** [`rancher/container-crontab`](https://github.com/rancher/container-crontab). This GitHub fork retains the upstream Git history, authorship, dates, and license notices unchanged; PastureStack maintenance is consolidated into one commit after the preserved upstream boundary.
+
+Past authorship and project origin are documented in [ORIGIN.md](ORIGIN.md) and
+remain available in the unmodified Git history. PastureStack does not claim
+exclusive authorship of the original work.
 
 ## License
-Copyright (c) 2014-2017 [Rancher Labs, Inc.](http://rancher.com)
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-[http://www.apache.org/licenses/LICENSE-2.0](http://www.apache.org/licenses/LICENSE-2.0)
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+This repository retains its existing Apache License 2.0 terms. See [LICENSE](LICENSE).

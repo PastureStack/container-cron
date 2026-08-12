@@ -1,0 +1,3 @@
+# Build and runtime root are documented in SECURITY.md.
+# container-cron needs Docker API access in supported legacy deployments.
+DS-0002
