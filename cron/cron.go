@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/PastureStack/container-cron/internal/metadata"
+	"github.com/robfig/cron/v3"
 	"github.com/sirupsen/logrus"
-	"gopkg.in/robfig/cron.v2"
 )
 
 var newMetadataClient = metadata.NewClientAndWait
@@ -37,7 +37,7 @@ type JobEntry struct {
 func NewCrontab() (*Crontab, error) {
 	logrus.Infof("Starting Cron")
 	crontab := &Crontab{
-		cronRunner: cron.New(),
+		cronRunner: cron.New(cron.WithSeconds()),
 		jobs:       map[string]*JobEntry{},
 		stopCh:     make(chan struct{}),
 	}
