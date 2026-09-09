@@ -6,6 +6,10 @@ actions according to cron expressions stored in container labels.
 The maintained runtime targets the PastureStack 1.6 compatibility control
 plane and current Docker Engine releases.
 
+The current public release is `v0.6.0`. This source tree targets the next
+numeric candidate, `v0.6.1`; the candidate is not a published image and must
+not be used as a deployment coordinate until its release gate completes.
+
 ## Build and test
 
 The supported development workflow uses the repository's disposable Dapper
