@@ -101,7 +101,7 @@ jobs:
             'docker --version; go version -m /usr/bin/docker' \
             > evidence/docker-cli-version.txt
           grep -F $'build\tCGO_ENABLED=0' evidence/product-go-version.txt >/dev/null
-          grep -F 'Docker version 29.7.2' evidence/docker-cli-version.txt >/dev/null
+          grep -F 'Docker version 29.9.2' evidence/docker-cli-version.txt >/dev/null
           docker run --rm --entrypoint sh "$DAPPER_IMAGE" -lc \
             'test ! -e /usr/libexec/docker/cli-plugins/docker-buildx'
           sha256sum bin/container-cron > evidence/container-cron.sha256
