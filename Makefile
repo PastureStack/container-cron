@@ -2,7 +2,7 @@ TARGETS := $(shell ls scripts)
 DAPPER_IMAGE ?= pasturestack-container-cron-dapper:ubuntu26
 DAPPER_SOURCE ?= /go/src/github.com/PastureStack/container-cron
 DAPPER_HOST_ARCH ?= amd64
-DOCKER_VERSION ?= 29.7.2
+DOCKER_VERSION ?= 29.9.2
 DOCKER_BUILD_NETWORK ?= host
 
 .dapper-image: Dockerfile.dapper

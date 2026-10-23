@@ -215,7 +215,7 @@ jobs:
               and ((.impact_statement | length) > 0)
             )
           ' security/dapper.openvex.json >/dev/null
-          grep -F $'linux-libc-dev:amd64\t7.0.0-29.29' evidence/dapper-dpkg.tsv >/dev/null
+          grep -F $'linux-libc-dev:amd64\t7.0.0-38.38' evidence/dapper-dpkg.tsv >/dev/null
           if grep -Eq '^linux-(image|modules)([-:]|[[:space:]])' evidence/dapper-dpkg.tsv; then
             printf 'Unexpected Linux kernel runtime package in Dapper image\n' >&2
             exit 1

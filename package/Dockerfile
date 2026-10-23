@@ -4,6 +4,8 @@ ARG VERSION
 ARG REVISION
 
 COPY ubuntu-apt.lock /licenses/ubuntu-apt.lock
+COPY ubuntu-security-packages.lock /licenses/ubuntu-security-packages.lock
+COPY install-ubuntu-security-updates /usr/local/libexec/pasturestack/install-ubuntu-security-updates
 COPY ca-certificates.deb /tmp/ca-certificates.deb
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -31,6 +33,7 @@ RUN set -eux; \
     test "$(dpkg-query -W -f='${Version}' ca-certificates)" = '20260816ubuntu0.26.04.1' && \
     test ! -e /usr/share/ca-certificates/mozilla/emSign_ECC_Root_CA_-_G3.crt && \
     rm -f /opt/pasturestack-ca-certificates.deb && \
+    sh /usr/local/libexec/pasturestack/install-ubuntu-security-updates /licenses/ubuntu-security-packages.lock /etc/ssl/certs/ca-certificates.crt && \
     { \
         printf 'snapshot\t%s\n' "${UBUNTU_APT_SNAPSHOT}"; \
         dpkg-query -W -f='${binary:Package}\t${Version}\n' | LC_ALL=C sort; \
