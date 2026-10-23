@@ -6,9 +6,7 @@ actions according to cron expressions stored in container labels.
 The maintained runtime targets the PastureStack 1.6 compatibility control
 plane and current Docker Engine releases.
 
-The current public release is `v0.6.1`. This source tree targets the next
-numeric candidate, `v0.6.1`; the candidate is not a published image and must
-not be used as a deployment coordinate until its release gate completes.
+The current public release is [`v0.6.1`](https://github.com/PastureStack/container-cron/releases/tag/v0.6.1), produced from `2cce2cc80f2590239d5ef758a21c54a3f1e0f2b9` by the [successful release gate](https://github.com/PastureStack/container-cron/actions/runs/39960497907). The published `ghcr.io/pasturestack/container-cron:v0.6.1` digest is `sha256:ea2790f2a3e32eb6e3266eb175ee0a69c4a854463c22a74604f69855da5c6829`. Later source or documentation changes do not alter that producer; component publication is not Server deployment.
 
 ## Build and test
 
