@@ -310,9 +310,7 @@ jobs:
       - name: Enforce full runtime vulnerability policy
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test_runtime_vulnerability_policy.py
-          python3 .github/scripts/enforce-runtime-vulnerabilities.py \
-            evidence/runtime-security.json .github/runtime-unfixed.json \
-            --repository PastureStack/container-cron
+          python3 .github/scripts/enforce-runtime-vulnerabilities.py --repository PastureStack/container-cron < evidence/runtime-security.json
 
       - name: Retain the exact verified runtime
         shell: bash
