@@ -6,7 +6,7 @@ actions according to cron expressions stored in container labels.
 The maintained runtime targets the PastureStack 1.6 compatibility control
 plane and current Docker Engine releases.
 
-The current public release is `v0.6.0`. This source tree targets the next
+The current public release is `v0.6.1`. This source tree targets the next
 numeric candidate, `v0.6.1`; the candidate is not a published image and must
 not be used as a deployment coordinate until its release gate completes.
 
@@ -93,3 +93,7 @@ exclusive authorship of the original work.
 ## License
 
 This repository retains its existing Apache License 2.0 terms. See [LICENSE](LICENSE).
+
+## October 2026 security maintenance
+
+Maintained Go builds select the patched Go 1.27.3 compiler without raising the existing Go language requirement. Ubuntu build/runtime stages apply the checksum-pinned `ca-certificates 20260816ubuntu0.26.04.1` security package after their frozen APT baseline; the final trust store and installed version are verified. Release artifacts must pass the repository's existing checks before publication.
