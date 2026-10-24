@@ -19,7 +19,7 @@ def fixture():
     before = dict(modules, **{'github.com/moby/go-archive': 'v0.2.0', 'golang.org/x/net': 'v0.59.0'})
     checks = [{'config': {'scanner_name': 'govulncheck', 'scanner_version': 'v1.9.0',
                           'scan_mode': 'source', 'scan_level': 'package'}},
-              {'sbom': {'go_version': 'go1.27.3', 'roots': [guard.MAIN],
+              {'SBOM': {'go_version': 'go1.27.3', 'roots': [guard.MAIN],
                         'modules': [{'path': k, 'version': v} for k, v in modules.items()]}}]
     checks.extend({'osv': {'id': identifier}} for identifier in sorted(guard.IDS))
     # Legacy module presence is expected; imported/called daemon code is not.
@@ -104,6 +104,7 @@ class BuildxEvidenceTests(unittest.TestCase):
 
     def test_incomplete_or_other_program_source_scan_rejected(self):
         for old, new in [('"source"', '"binary"'), ('"package"', '"module"'),
+                         ('"SBOM"', '"sbom"'),
                          (guard.MAIN, 'example.org/other'), ('go1.27.3', 'go1.26.10'),
                          ('GO-2026-6253', 'GO-MISSING')]:
             data = fixture(); data['sourceCheck'] = data['sourceCheck'].replace(old, new)

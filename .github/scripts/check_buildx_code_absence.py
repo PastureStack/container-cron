@@ -136,7 +136,7 @@ def source_check(data):
     require(len(configs) == 1 and configs[0]['scanner_name'] == 'govulncheck'
             and configs[0]['scanner_version'] == 'v1.9.0' and configs[0]['scan_mode'] == 'source'
             and configs[0]['scan_level'] == 'package', 'Native package source check missing or replaced by stripped-binary fallback')
-    sboms = [x['sbom'] for x in checks if 'sbom' in x]
+    sboms = [x['SBOM'] for x in checks if 'SBOM' in x]
     require(len(sboms) == 1 and sboms[0]['go_version'] == 'go1.27.3' and sboms[0]['roots'] == [MAIN],
             'Native source check did not inspect this Buildx program')
     scanned = unique_pairs((m['path'], m.get('version', '')) for m in sboms[0]['modules'])
