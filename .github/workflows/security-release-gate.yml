@@ -39,6 +39,8 @@ jobs:
           git rev-parse HEAD > evidence/source-revision.txt
           sha256sum \
             Dockerfile.dapper \
+            toolchain/build-buildx \
+            .github/scripts/check_buildx_code_absence.py \
             package/Dockerfile \
             scripts/package \
             security/dapper.openvex.json \
@@ -46,6 +48,9 @@ jobs:
             go.mod \
             go.sum \
             > evidence/source-locks.sha256
+
+      - name: Validate Buildx source applicability guards
+        run: python3 -B .github/scripts/test_buildx_code_absence.py
 
       - name: Build, test, validate, and package
         shell: bash
@@ -104,6 +109,11 @@ jobs:
           grep -F 'Docker version 29.9.2' evidence/docker-cli-version.txt >/dev/null
           docker run --rm --entrypoint sh "$DAPPER_IMAGE" -lc \
             'test ! -e /usr/libexec/docker/cli-plugins/docker-buildx'
+          docker run --rm --entrypoint go "$DAPPER_IMAGE" \
+            version -m /usr/local/lib/docker/cli-plugins/docker-buildx \
+            > evidence/buildx-go-version.txt
+          docker run --rm --entrypoint docker "$DAPPER_IMAGE" buildx version \
+            > evidence/buildx-version.txt
           sha256sum bin/container-cron > evidence/container-cron.sha256
 
       - name: Scan source, product, and images
@@ -198,6 +208,47 @@ jobs:
             "$TRIVY_IMAGE" rootfs \
             --skip-db-update --offline-scan --scanners vuln,secret --format json \
             --output /evidence/dapper-rootfs-raw.json /scan
+
+          # The daemon statements qualify this exact tool only. Refuse another
+          # binary with the same PURL before the native matcher sees the VEX.
+          cp "$dapper_rootfs"/licenses/BUILDX-* evidence/
+          buildx_sha="$(sha256sum "$dapper_rootfs/usr/local/lib/docker/cli-plugins/docker-buildx")"
+          buildx_sha="${buildx_sha%% *}"
+          jq -n \
+            --rawfile binding evidence/BUILDX-SOURCE.tsv \
+            --rawfile packages evidence/BUILDX-PACKAGES.txt \
+            --rawfile files evidence/BUILDX-SOURCE-FILES.tsv \
+            --rawfile modulesBefore evidence/BUILDX-MODULES-before.txt \
+            --rawfile modulesAfter evidence/BUILDX-MODULES-after.txt \
+            --rawfile buildInfo evidence/buildx-go-version.txt \
+            --rawfile version evidence/buildx-version.txt \
+            --rawfile sourceCheck evidence/BUILDX-SOURCE-GOVULNCHECK.json \
+            --rawfile daemon42306 evidence/BUILDX-GO-2026-5617.json \
+            --rawfile daemon41567 evidence/BUILDX-GO-2026-5746.json \
+            --rawfile archive17106 evidence/BUILDX-GO-2026-6253.json \
+            --rawfile net78669 evidence/BUILDX-GO-2026-6611.json \
+            --rawfile raw evidence/dapper-rootfs-raw.json \
+            --slurpfile vex security/dapper.openvex.json \
+            --arg binarySha256 "$buildx_sha" \
+            '{binding:$binding,packages:$packages,files:$files,modulesBefore:$modulesBefore,modulesAfter:$modulesAfter,buildInfo:$buildInfo,version:$version,sourceCheck:$sourceCheck,osvInputs:{"GO-2026-5617":$daemon42306,"GO-2026-5746":$daemon41567,"GO-2026-6253":$archive17106,"GO-2026-6611":$net78669},raw:$raw,vex:$vex[0],binarySha256:$binarySha256}' \
+            | python3 -B .github/scripts/check_buildx_code_absence.py \
+            > evidence/buildx-code-absence.json
+
+          docker run --rm \
+            -v "$dapper_rootfs:/scan:ro" \
+            -v "$PWD/evidence:/evidence" \
+            -v "$PWD/security:/vex:ro" \
+            -v "$trivy_cache:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" rootfs --vex /vex/dapper.openvex.json \
+            --skip-db-update --offline-scan --scanners vuln,secret --format json \
+            --output /evidence/dapper-rootfs-effective.json /scan
+          jq -n --rawfile raw evidence/dapper-rootfs-raw.json \
+            --rawfile effective evidence/dapper-rootfs-effective.json \
+            --slurpfile guard evidence/buildx-code-absence.json \
+            --slurpfile vex security/dapper.openvex.json \
+            '{raw:$raw,effective:$effective,guard:$guard[0],vex:$vex[0]}' \
+            | python3 -B .github/scripts/check_buildx_code_absence.py --native \
+            > evidence/dapper-native-vex.json
 
           jq -r '
             .Results[]?.Vulnerabilities[]?

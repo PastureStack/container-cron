@@ -3,6 +3,7 @@ FROM ubuntu:26.04@sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea264
 COPY ubuntu-apt.lock /licenses/ubuntu-apt.lock
 COPY ubuntu-security-packages.lock /licenses/ubuntu-security-packages.lock
 COPY scripts/install-ubuntu-security-updates /usr/local/libexec/pasturestack/install-ubuntu-security-updates
+COPY toolchain/build-buildx /usr/local/libexec/pasturestack/build-buildx
 ADD --checksum=sha256:5b6326f1932cfd7be57130561dc78192f09ed9f58bfbe6606ed0c50510c3b6cd https://archive.ubuntu.com/ubuntu/pool/main/c/ca-certificates/ca-certificates_20260816ubuntu0.26.04.1_all.deb /tmp/ca-certificates.deb
 
 ARG DAPPER_HOST_ARCH=amd64
@@ -12,9 +13,6 @@ ARG GO_SHA256_arm64=a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f119326958716
 ARG DOCKER_VERSION=29.9.2
 ARG DOCKER_SHA256_amd64=9ac225999fd5e863f7694c728ef23d480616b1e5639328fa309befd4243d69eb
 ARG DOCKER_SHA256_arm64=873b3e0207857c3b2f28392fb922f3ea6efe37620c16d4d4aaf2fef409c90b73
-ARG BUILDX_VERSION=0.38.1
-ARG BUILDX_SHA256_amd64=e25d5cd675092bb5d1d03632fdc46cdf3fede7b514dc5f023a105e00d3ce5ad4
-ARG BUILDX_SHA256_arm64=3b83b3731916ba433feccaaa689fe5bcdc81c641d92c8e6c2ea865dfa141c97a
 ENV DEBIAN_FRONTEND=noninteractive
 ENV HOST_ARCH=${DAPPER_HOST_ARCH} \
     ARCH=${DAPPER_HOST_ARCH} \
@@ -71,8 +69,8 @@ RUN set -eux; \
 RUN git config --system --add safe.directory '*'
 
 RUN case "${DAPPER_HOST_ARCH}" in \
-        amd64) go_arch=amd64; docker_arch=x86_64; go_sha="${GO_SHA256_amd64}"; docker_sha="${DOCKER_SHA256_amd64}"; buildx_sha="${BUILDX_SHA256_amd64}" ;; \
-        arm64) go_arch=arm64; docker_arch=aarch64; go_sha="${GO_SHA256_arm64}"; docker_sha="${DOCKER_SHA256_arm64}"; buildx_sha="${BUILDX_SHA256_arm64}" ;; \
+        amd64) go_arch=amd64; docker_arch=x86_64; go_sha="${GO_SHA256_amd64}"; docker_sha="${DOCKER_SHA256_amd64}" ;; \
+        arm64) go_arch=arm64; docker_arch=aarch64; go_sha="${GO_SHA256_arm64}"; docker_sha="${DOCKER_SHA256_arm64}" ;; \
         *) echo "unsupported DAPPER_HOST_ARCH=${DAPPER_HOST_ARCH}" >&2; exit 1 ;; \
     esac && \
     curl -fsSL -o /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-${go_arch}.tar.gz" && \
@@ -84,16 +82,11 @@ RUN case "${DAPPER_HOST_ARCH}" in \
     tar xzf /tmp/docker.tgz -C /usr/bin --strip-components=1 docker/docker && \
     rm -f /tmp/docker.tgz && \
     chmod +x /usr/bin/docker && \
-    mkdir -p /usr/local/lib/docker/cli-plugins && \
-    curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-        -o /usr/local/lib/docker/cli-plugins/docker-buildx \
-        "https://github.com/docker/buildx/releases/download/v${BUILDX_VERSION}/buildx-v${BUILDX_VERSION}.linux-${go_arch}" && \
-    echo "${buildx_sha}  /usr/local/lib/docker/cli-plugins/docker-buildx" | sha256sum -c - && \
-    chmod 0755 /usr/local/lib/docker/cli-plugins/docker-buildx && \
     mkdir -p /go/bin /go/src && \
     go version && \
-    docker --version && \
-    docker buildx version | grep -F " v${BUILDX_VERSION} "
+    docker --version
+
+RUN bash /usr/local/libexec/pasturestack/build-buildx
 
 ENV DAPPER_SOURCE=/go/src/github.com/PastureStack/container-cron/ \
     DAPPER_OUTPUT="./bin ./dist" \
