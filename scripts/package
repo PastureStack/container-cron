@@ -36,7 +36,7 @@ docker_build_network_arg=()
 if [ -n "${DOCKER_BUILD_NETWORK:-}" ]; then
     docker_build_network_arg=(--network="${DOCKER_BUILD_NETWORK}")
 fi
-DOCKER_BUILDKIT=0 docker build "${docker_build_network_arg[@]}" \
+DOCKER_BUILDKIT=1 docker build "${docker_build_network_arg[@]}" \
     --build-arg VERSION="${TAG}" \
     --build-arg REVISION="${REVISION}" \
     -t "${IMAGE_NAME}:${TAG}" "${build_context}"

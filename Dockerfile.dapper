@@ -3,6 +3,7 @@ FROM ubuntu:26.04@sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea264
 COPY ubuntu-apt.lock /licenses/ubuntu-apt.lock
 COPY ubuntu-security-packages.lock /licenses/ubuntu-security-packages.lock
 COPY scripts/install-ubuntu-security-updates /usr/local/libexec/pasturestack/install-ubuntu-security-updates
+COPY toolchain/build-buildx /usr/local/libexec/pasturestack/build-buildx
 ADD --checksum=sha256:5b6326f1932cfd7be57130561dc78192f09ed9f58bfbe6606ed0c50510c3b6cd https://archive.ubuntu.com/ubuntu/pool/main/c/ca-certificates/ca-certificates_20260816ubuntu0.26.04.1_all.deb /tmp/ca-certificates.deb
 
 ARG DAPPER_HOST_ARCH=amd64
@@ -84,6 +85,8 @@ RUN case "${DAPPER_HOST_ARCH}" in \
     mkdir -p /go/bin /go/src && \
     go version && \
     docker --version
+
+RUN bash /usr/local/libexec/pasturestack/build-buildx
 
 ENV DAPPER_SOURCE=/go/src/github.com/PastureStack/container-cron/ \
     DAPPER_OUTPUT="./bin ./dist" \

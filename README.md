@@ -1,12 +1,14 @@
 # PastureStack Container Cron
 
+Linux runtime **`v0.6.2`** consumes verified Ubuntu security backports without adding packages or changing the existing coreutils provider.
+
+The runtime recipe applies the qualified Ubuntu 26.04 backport bundle only to already-installed packages and preserves the selected coreutils provider. The immutable bundle digest and final-image checks are pending. Bundle manifests, qualification, exact-version OpenVEX, source inputs and install/verify receipts are retained under `/usr/share/pasturestack/security/ubuntu-backports/`; raw scan evidence and the existing full-severity release policy remain required.
+
 Container Cron watches Docker events and runs `start`, `stop`, or `restart`
 actions according to cron expressions stored in container labels.
 
 The maintained runtime targets the PastureStack 1.6 compatibility control
 plane and current Docker Engine releases.
-
-The current public release is [`v0.6.1`](https://github.com/PastureStack/container-cron/releases/tag/v0.6.1), produced from `2cce2cc80f2590239d5ef758a21c54a3f1e0f2b9` by the [successful release gate](https://github.com/PastureStack/container-cron/actions/runs/39960497907). The published `ghcr.io/pasturestack/container-cron:v0.6.1` digest is `sha256:ea2790f2a3e32eb6e3266eb175ee0a69c4a854463c22a74604f69855da5c6829`. Later source or documentation changes do not alter that producer; component publication is not Server deployment.
 
 ## Build and test
 
@@ -23,13 +25,15 @@ legacy `bin/container-crontab` executable alias for staged upgrades.
 Run the isolated container lifecycle test after packaging:
 
 ```sh
-VERSION_OVERRIDE=v0.6.1 TAG=v0.6.1 make smoke
+VERSION_OVERRIDE=v0.6.2 TAG=v0.6.2 make smoke
 ```
 
 The smoke test creates only uniquely named disposable containers and verifies
 that scheduled `start` and `stop` actions both reach the Docker daemon.
 
 ## Run
+
+The runtime image is `ghcr.io/pasturestack/container-cron:v0.6.2`.
 
 Standard Docker mode:
 
@@ -103,5 +107,4 @@ finding with an official fix blocks release, regardless of severity. Unknown
 findings block unless a separately reviewed, exact not-affected statement is
 proved by the actual product dependency graph. LOW/MEDIUM findings without an
 official fix require the repository's exact CVE/package/version/PURL review ledger;
-new or changed findings fail closed. This policy-only update does not replace any
-already published immutable artifact.
+new or changed findings fail closed. Each candidate must pass this policy against its exact image and package versions.

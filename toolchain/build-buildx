@@ -1,0 +1,93 @@
+#!/bin/bash
+set -euo pipefail
+
+# Unmodified official source; only these two accepted module releases change.
+source_commit=0dbe87f36ed472fe36b6796c3f70b4210a731fc5
+source_sha=c5c810b083ed3725f7d4299ba01505b5891d164cf81c3398ea4c3b27a3b71149
+original_mod_sha=a93029abb94e88ddaa532ddeaab4802259a1025408f1eac417a9886e140067ef
+updated_mod_sha=230c98fa66a534b3a4d2dcdb0507e871658deff3c80058b01d85d7a18ce656b9
+version=v0.38.1-pasturestack.1
+source_dir=/tmp/pasturestack-buildx-source
+export GOMODCACHE=/tmp/pasturestack-buildx-mod GOCACHE=/tmp/pasturestack-buildx-cache
+export GOFLAGS=-mod=mod GOWORK=off GOTOOLCHAIN=local CGO_ENABLED=0
+export GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org
+export GOOS=linux GOARCH="${DAPPER_HOST_ARCH:?}"
+case "$GOARCH" in amd64|arm64) ;; *) exit 1 ;; esac
+test "$(go env GOVERSION)" = go1.27.3
+test ! -e "$source_dir"
+curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+    --retry 5 --retry-all-errors -o /tmp/pasturestack-buildx.tar.gz \
+    "https://codeload.github.com/docker/buildx/tar.gz/${source_commit}"
+echo "$source_sha  /tmp/pasturestack-buildx.tar.gz" | sha256sum -c -
+mkdir -p "$source_dir" /usr/local/lib/docker/cli-plugins /licenses
+tar -xzf /tmp/pasturestack-buildx.tar.gz --strip-components=1 -C "$source_dir"
+cd "$source_dir"
+echo "$original_mod_sha  go.mod" | sha256sum -c -
+go list -m all > /licenses/BUILDX-MODULES-before.txt
+go mod edit -require=golang.org/x/net@v0.60.0 -require=github.com/moby/go-archive@v0.3.0
+echo "$updated_mod_sha  go.mod" | sha256sum -c -
+go mod download
+go mod verify
+go list -deps ./cmd/buildx > /licenses/BUILDX-PACKAGES.txt
+go list -deps -compiled -f '{{ $p := . }}{{range .CompiledGoFiles}}{{printf "%s\t%s\t%s\n" $p.ImportPath $p.Dir .}}{{end}}{{range .SFiles}}{{printf "%s\t%s\t%s\n" $p.ImportPath $p.Dir .}}{{end}}{{range .HFiles}}{{printf "%s\t%s\t%s\n" $p.ImportPath $p.Dir .}}{{end}}{{range .EmbedFiles}}{{printf "%s\t%s\t%s\n" $p.ImportPath $p.Dir .}}{{end}}' \
+    ./cmd/buildx > /tmp/pasturestack-buildx-files.txt
+while IFS=$'\t' read -r package directory name; do
+    [ -n "$package" ] || continue
+    case "$name" in /*) file="$name" ;; *) file="$directory/$name" ;; esac
+    test -f "$file" && test ! -L "$file"
+    case "$file" in
+        "$source_dir"/*) logical="source/${file#"$source_dir"/}" ;;
+        "$GOMODCACHE"/*) logical="module/${file#"$GOMODCACHE"/}" ;;
+        /usr/local/go/src/*) logical="goroot/${file#/usr/local/go/src/}" ;;
+        *) printf 'Unexpected compiled source path: %s\n' "$file" >&2; exit 1 ;;
+    esac
+    hash="$(sha256sum -- "$file")"; hash="${hash%% *}"
+    printf '%s\t%s\t%s\n' "$package" "$logical" "$hash"
+done < /tmp/pasturestack-buildx-files.txt | LC_ALL=C sort -u > /licenses/BUILDX-SOURCE-FILES.tsv
+
+# Keep the canonical four reports byte-for-byte. This is a bounded source check;
+# the existing complete Trivy scans still enforce all of the original policy.
+db=/tmp/pasturestack-buildx-vulndb
+mkdir -p "$db/ID" "$db/index" /tmp/pasturestack-buildx-tools
+while read -r id hash; do
+    curl --fail --silent --show-error --proto '=https' --retry 5 --retry-all-errors \
+        -o "$db/ID/$id.json" "https://vuln.go.dev/ID/$id.json"
+    echo "$hash  $db/ID/$id.json" | sha256sum -c -
+    cp "$db/ID/$id.json" "/licenses/BUILDX-$id.json"
+done <<'PINS'
+GO-2026-5617 5a24060e5cc8cbf6a146615ebe5a7e5beac2f8f267c905538736ed6931ae2af5
+GO-2026-5746 d11da88232883a96ac3b74f848f172ce86c3783b7818d7da4b925335621d5273
+GO-2026-6253 4f337e5aad0f8e83e3db2fc67d058fe0e80017b8c68f494b7e82be87e7120872
+GO-2026-6611 5e89ac4314a24eac41111b71ef4544f22836c7b1baf48747e31c5c1d8282c3de
+PINS
+printf '%s\n' '{"modified":"2026-10-08T22:31:09Z"}' > "$db/index/db.json"
+printf '%s\n' '[{"id":"GO-2026-6253","modified":"2026-08-25T19:43:10Z","aliases":["CVE-2026-17106","GHSA-hfg8-hc9c-6c3h"]},{"id":"GO-2026-5746","modified":"2026-07-23T17:09:44Z","aliases":["CVE-2026-41567","GHSA-x86f-5xw2-fm2r"]},{"id":"GO-2026-5617","modified":"2026-07-27T20:14:16Z","aliases":["CVE-2026-42306","GHSA-rg2x-37c3-w2rh"]},{"id":"GO-2026-6611","modified":"2026-10-08T22:31:09Z","aliases":["CVE-2026-78669"]}]' > "$db/index/vulns.json"
+printf '%s\n' '[{"path":"github.com/docker/docker","vulns":[{"id":"GO-2026-5617","modified":"2026-07-27T20:14:16Z"},{"id":"GO-2026-5746","modified":"2026-07-23T17:09:44Z"}]},{"path":"github.com/moby/moby","vulns":[{"id":"GO-2026-5617","modified":"2026-07-27T20:14:16Z"},{"id":"GO-2026-5746","modified":"2026-07-23T17:09:44Z"}]},{"path":"github.com/moby/moby/v2","vulns":[{"id":"GO-2026-5617","modified":"2026-07-27T20:14:16Z"},{"id":"GO-2026-5746","modified":"2026-07-23T17:09:44Z"}]},{"path":"github.com/moby/go-archive","vulns":[{"id":"GO-2026-6253","modified":"2026-08-25T19:43:10Z"}]},{"path":"golang.org/x/net","vulns":[{"id":"GO-2026-6611","modified":"2026-10-08T22:31:09Z"}]},{"path":"stdlib","vulns":[{"id":"GO-2026-6611","modified":"2026-10-08T22:31:09Z"}]}]' > "$db/index/modules.json"
+GOBIN=/tmp/pasturestack-buildx-tools go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+# The vulnerable daemon package must be absent, so package-level source
+# analysis is sufficient and avoids an unnecessary whole-Buildx call graph.
+GOPROXY=off /tmp/pasturestack-buildx-tools/govulncheck -mode=source -scan=package -format=json \
+    -db="file://$db" ./cmd/buildx > /licenses/BUILDX-SOURCE-GOVULNCHECK.json
+GOPROXY=off go build -trimpath -buildvcs=false \
+    -ldflags "-s -w -buildid= -X github.com/docker/buildx/version.Package=github.com/docker/buildx -X github.com/docker/buildx/version.Version=${version} -X github.com/docker/buildx/version.Revision=${source_commit}" \
+    -o /usr/local/lib/docker/cli-plugins/docker-buildx ./cmd/buildx
+echo "$updated_mod_sha  go.mod" | sha256sum -c -
+go list -m all > /licenses/BUILDX-MODULES-after.txt
+sed -E '/^(golang.org\/x\/net|github.com\/moby\/go-archive) /d' /licenses/BUILDX-MODULES-before.txt > /tmp/pasturestack-buildx-before-other.txt
+sed -E '/^(golang.org\/x\/net|github.com\/moby\/go-archive) /d' /licenses/BUILDX-MODULES-after.txt > /tmp/pasturestack-buildx-after-other.txt
+git diff --no-index --exit-code /tmp/pasturestack-buildx-before-other.txt /tmp/pasturestack-buildx-after-other.txt
+grep -Fx 'golang.org/x/net v0.60.0' /licenses/BUILDX-MODULES-after.txt
+grep -Fx 'github.com/moby/go-archive v0.3.0' /licenses/BUILDX-MODULES-after.txt
+go version -m /usr/local/lib/docker/cli-plugins/docker-buildx > /licenses/BUILDX-GO-VERSION.txt
+docker buildx version > /licenses/BUILDX-VERSION.txt
+grep -F "github.com/docker/buildx $version $source_commit" /licenses/BUILDX-VERSION.txt
+binary_sha="$(sha256sum /usr/local/lib/docker/cli-plugins/docker-buildx)"; binary_sha="${binary_sha%% *}"
+printf '%s\t%s\n' schemaVersion 1 upstreamVersion v0.38.1 downstreamVersion "$version" \
+    sourceCommit "$source_commit" sourceArchiveSha256 "$source_sha" \
+    originalGoModSha256 "$original_mod_sha" updatedGoModSha256 "$updated_mod_sha" \
+    goVersion go1.27.3 goos linux goarch "$GOARCH" binarySha256 "$binary_sha" \
+    > /licenses/BUILDX-SOURCE.tsv
+cd /
+rm -rf /tmp/pasturestack-buildx-source /tmp/pasturestack-buildx-mod /tmp/pasturestack-buildx-cache \
+    /tmp/pasturestack-buildx-vulndb /tmp/pasturestack-buildx-tools /tmp/pasturestack-buildx.tar.gz \
+    /tmp/pasturestack-buildx-files.txt /tmp/pasturestack-buildx-before-other.txt /tmp/pasturestack-buildx-after-other.txt
