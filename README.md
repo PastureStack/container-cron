@@ -2,7 +2,7 @@
 
 Linux runtime **`v0.6.2`** consumes verified Ubuntu security backports without adding packages or changing the existing coreutils provider.
 
-The runtime recipe applies the qualified Ubuntu 26.04 backport bundle only to already-installed packages and preserves the selected coreutils provider. The immutable bundle digest and final-image checks are pending. Bundle manifests, qualification, exact-version OpenVEX, source inputs and install/verify receipts are retained under `/usr/share/pasturestack/security/ubuntu-backports/`; raw scan evidence and the existing full-severity release policy remain required.
+The runtime recipe applies the qualified Ubuntu 26.04 backport bundle only to already-installed packages and preserves the selected coreutils provider. The published `v0.6.2` image passed the immutable bundle and final-image checks; see the [release evidence](https://github.com/PastureStack/container-cron/actions/runs/40144617903). Bundle manifests, qualification, exact-version OpenVEX, source inputs and install/verify receipts are retained under `/usr/share/pasturestack/security/ubuntu-backports/`; raw scan evidence and the existing full-severity release policy remain required.
 
 Container Cron watches Docker events and runs `start`, `stop`, or `restart`
 actions according to cron expressions stored in container labels.
